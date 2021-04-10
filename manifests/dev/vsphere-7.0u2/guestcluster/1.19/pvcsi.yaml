@@ -218,8 +218,7 @@ spec:
             - "--v=4"
             - "--timeout=300s"
             - "--csi-address=$(ADDRESS)"
-            - "--enable-leader-election"
-            - "--leader-election-type=leases"
+            - "--leader-election"
           imagePullPolicy: "IfNotPresent"
           env:
             - name: ADDRESS

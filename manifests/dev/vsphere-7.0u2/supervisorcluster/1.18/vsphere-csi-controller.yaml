@@ -148,8 +148,7 @@ spec:
         - "--csi-address=$(ADDRESS)"
         - "--feature-gates=Topology=true"
         - "--strict-topology"
-        - "--enable-leader-election"
-        - "--leader-election-type=leases"
+        - "--leader-election"
         - "--enable-hostlocal-placement=true"
         env:
         - name: ADDRESS
