@@ -450,7 +450,7 @@ func (c *controller) createBlockVolume(ctx context.Context, req *csi.CreateVolum
 			val := strings.ToLower(storageTopologyType)
 			if val != "zonal" {
 				return nil, csifault.CSIInvalidArgumentFault, logger.LogNewErrorCodef(log, codes.InvalidArgument,
-					"invalid value found for StorageClass parameter `storagetopologytype`: %q.",
+					"invalid TEST value found for StorageClass parameter `storagetopologytype`: %q.",
 					storageTopologyType)
 			}
 		}
