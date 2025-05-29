@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsfileaccessconfig/v1alpha1"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/crypto"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/logger"
 )
@@ -184,9 +185,34 @@ func (h *CSISupervisorMutationWebhook) Handle(ctx context.Context, req admission
 		case admissionv1.Create:
 			return h.mutateNewPVC(ctx, req)
 		}
+	} else if req.Kind.Kind == "CnsFileAccessConfig" {
+		// TODO: CHECK FOR FSS
+		switch req.Operation {
+		case admissionv1.Create:
+			{
+				return h.mutateNewCnsFileAccessConfig(ctx, req)
+			}
+		}
+	}
+	return admission.Allowed("")
+}
+
+func (h *CSISupervisorMutationWebhook) mutateNewCnsFileAccessConfig(ctx context.Context, req admission.Request) admission.Response {
+	newCnsFileAccessConfig := &v1alpha1.CnsFileAccessConfig{}
+	if err := json.Unmarshal(req.Object.Raw, newCnsFileAccessConfig); err != nil {
+		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
-	return admission.Allowed("")
+	if err := setVmOwnerReference(ctx, newCnsFileAccessConfig); err != nil {
+		return admission.Denied(err.Error())
+	}
+
+	newRawCnsFileAccessConfig, err := json.Marshal(newCnsFileAccessConfig)
+	if err != nil {
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+
+	return admission.PatchResponseFromRaw(req.Object.Raw, newRawCnsFileAccessConfig)
 }
 
 func (h *CSISupervisorMutationWebhook) mutateNewPVC(ctx context.Context, req admission.Request) admission.Response {
