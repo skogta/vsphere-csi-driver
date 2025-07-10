@@ -3,6 +3,7 @@ package cnsvolumeinfo
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,6 +27,11 @@ type volumeInfo struct {
 	volumeInfoInformer cache.SharedIndexInformer
 	// k8sClient helps operate on CnsVolumeInfo custom resource.
 	k8sClient client.Client
+	// Per volume lock for concurrent access to CnsFileVolumeClient instances.
+	// Keys are strings representing volume handles (or SV-PVC names).
+	// Values are individual sync.Mutex locks that need to be held
+	// to make updates to the CnsFileVolumeClient instance on the API server.
+	volumeLock *sync.Map
 }
 
 var (
@@ -76,6 +82,82 @@ type VolumeInfoService interface {
 
 	// PatchVolumeInfo patches the CNSVolumeInfo instance associated with volumeID in given parameters.
 	PatchVolumeInfo(ctx context.Context, volumeID string, patchBytes []byte, retries int) error
+
+	// AddVmUUIDToAttachedVmList adds the given VM UUID to the list of attached VMs list.
+	AddVmUUIDToAttachedVmList(ctx context.Context, volumeID string, vmUUID string) error
+
+	// RemoeVmUUIDFromAttachedVmList remvoes the given VM UUID from the list of attached VMs list.
+	RemoeVmUUIDFromAttachedVmList(ctx context.Context, volumeID string, vmUUID string) error
+}
+
+// AddVmUUIDToAttachedVmList adds the given VM UUID to the list of attached VMs list.
+func (volumeInfo *volumeInfo) AddVmUUIDToAttachedVmList(ctx context.Context, volumeID string, vmUUID string) error {
+	log := logger.GetLogger(ctx)
+
+	actual, _ := volumeInfo.volumeLock.LoadOrStore(volumeID, &sync.Mutex{})
+	instanceLock, ok := actual.(*sync.Mutex)
+	if !ok {
+		return logger.LogNewErrorf(log, "failed to cast lock for cnsfilevolumeclient instance: %s", volumeID)
+	}
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+
+	volumeInfoInstance, err := volumeInfo.GetVolumeInfoForVolumeID(ctx, volumeID)
+	if err != nil {
+		return logger.LogNewErrorf(log, "failed to fetch CnsVolumeInfo instance for volumeID: %q", volumeID)
+	}
+
+	if volumeInfoInstance.Spec.AttachedVms == nil {
+		volumeInfoInstance.Spec.AttachedVms = make([]string, 0)
+	}
+
+	for _, attachedVm := range volumeInfoInstance.Spec.AttachedVms {
+		volumeInfoInstance.Spec.AttachedVms = append(volumeInfoInstance.Spec.AttachedVms, attachedVm)
+	}
+
+	err = volumeInfo.k8sClient.Update(ctx, volumeInfoInstance)
+	if err != nil {
+		return logger.LogNewErrorf(log, "failed to add VM UUID %s to cnsvolumeinfo instance %s", vmUUID, volumeInfoInstance.Name)
+	}
+	return nil
+}
+
+// RemoeVmUUIDFromAttachedVmList remvoes the given VM UUID from the list of attached VMs list.
+func (volumeInfo *volumeInfo) RemoeVmUUIDFromAttachedVmList(ctx context.Context, volumeID string, vmUUID string) error {
+	log := logger.GetLogger(ctx)
+
+	actual, _ := volumeInfo.volumeLock.LoadOrStore(volumeID, &sync.Mutex{})
+	instanceLock, ok := actual.(*sync.Mutex)
+	if !ok {
+		return logger.LogNewErrorf(log, "failed to cast lock for cnsfilevolumeclient instance: %s", volumeID)
+	}
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+
+	volumeInfoInstance, err := volumeInfo.GetVolumeInfoForVolumeID(ctx, volumeID)
+	if err != nil {
+		return logger.LogNewErrorf(log, "failed to fetch CnsVolumeInfo instance for volumeID: %q", volumeID)
+	}
+
+	if volumeInfoInstance.Spec.AttachedVms == nil {
+		volumeInfoInstance.Spec.AttachedVms = make([]string, 0)
+	}
+
+	for index, attachedVm := range volumeInfoInstance.Spec.AttachedVms {
+		if attachedVm == vmUUID {
+			volumeInfoInstance.Spec.AttachedVms = append(
+				volumeInfoInstance.Spec.AttachedVms[:index],
+				volumeInfoInstance.Spec.AttachedVms[index+1:]...)
+			err = volumeInfo.k8sClient.Update(ctx, volumeInfoInstance)
+			if err != nil {
+				return logger.LogNewErrorf(log, "failed to add VM UUID %s to cnsvolumeinfo instance %s", vmUUID, volumeInfoInstance.Name)
+			}
+			return nil
+		}
+	}
+
+	log.Debugf("Could not find VM %s in list. Returning.", vmUUID)
+	return nil
 }
 
 // InitVolumeInfoService returns the singleton VolumeInfoService.
@@ -133,6 +215,14 @@ func (volumeInfo *volumeInfo) ListAllVolumeInfos() []interface{} {
 func (volumeInfo *volumeInfo) VolumeInfoCrExistsForVolume(ctx context.Context, volumeID string) (bool, error) {
 	log := logger.GetLogger(ctx)
 
+	actual, _ := volumeInfo.volumeLock.LoadOrStore(volumeID, &sync.Mutex{})
+	instanceLock, ok := actual.(*sync.Mutex)
+	if !ok {
+		return false, logger.LogNewErrorf(log, "failed to cast lock for cnsfilevolumeclient instance: %s", volumeID)
+	}
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+
 	volumeInfoCrName := getCnsVolumeInfoCrName(ctx, volumeID)
 	key := csiNamespace + "/" + volumeInfoCrName
 	_, found, err := volumeInfo.volumeInfoInformer.GetStore().GetByKey(key)
@@ -149,6 +239,15 @@ func (volumeInfo *volumeInfo) VolumeInfoCrExistsForVolume(ctx context.Context, v
 // GetvCenterForVolumeID return vCenter for the given VolumeID
 func (volumeInfo *volumeInfo) GetvCenterForVolumeID(ctx context.Context, volumeID string) (string, error) {
 	log := logger.GetLogger(ctx)
+
+	actual, _ := volumeInfo.volumeLock.LoadOrStore(volumeID, &sync.Mutex{})
+	instanceLock, ok := actual.(*sync.Mutex)
+	if !ok {
+		return "", logger.LogNewErrorf(log, "failed to cast lock for cnsfilevolumeclient instance: %s", volumeID)
+	}
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+
 	// Since CNSVolumeInfo is namespaced CR, we need to prefix "namespace-name/" to obtain value from the store
 	volumeInfoCrName := getCnsVolumeInfoCrName(ctx, volumeID)
 	key := csiNamespace + "/" + volumeInfoCrName
@@ -241,6 +340,14 @@ func (volumeInfo *volumeInfo) CreateVolumeInfoWithPolicyInfo(ctx context.Context
 func (volumeInfo *volumeInfo) DeleteVolumeInfo(ctx context.Context, volumeID string) error {
 	log := logger.GetLogger(ctx)
 
+	actual, _ := volumeInfo.volumeLock.LoadOrStore(volumeID, &sync.Mutex{})
+	instanceLock, ok := actual.(*sync.Mutex)
+	if !ok {
+		return logger.LogNewErrorf(log, "failed to cast lock for cnsfilevolumeclient instance: %s", volumeID)
+	}
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+
 	volumeInfoCrName := getCnsVolumeInfoCrName(ctx, volumeID)
 
 	object := cnsvolumeinfov1alpha1.CNSVolumeInfo{
@@ -267,6 +374,15 @@ func (volumeInfo *volumeInfo) DeleteVolumeInfo(ctx context.Context, volumeID str
 func (volumeInfo *volumeInfo) GetVolumeInfoForVolumeID(ctx context.Context, volumeID string) (
 	*cnsvolumeinfov1alpha1.CNSVolumeInfo, error) {
 	log := logger.GetLogger(ctx)
+
+	actual, _ := volumeInfo.volumeLock.LoadOrStore(volumeID, &sync.Mutex{})
+	instanceLock, ok := actual.(*sync.Mutex)
+	if !ok {
+		return nil, logger.LogNewErrorf(log, "failed to cast lock for cnsfilevolumeclient instance: %s", volumeID)
+	}
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+
 	// Since CNSVolumeInfo is namespaced CR, we need to prefix "namespace-name/" to obtain value from the store
 	volumeInfoCrName := getCnsVolumeInfoCrName(ctx, volumeID)
 	key := csiNamespace + "/" + volumeInfoCrName
@@ -287,6 +403,14 @@ func (volumeInfo *volumeInfo) GetVolumeInfoForVolumeID(ctx context.Context, volu
 func (volumeInfo *volumeInfo) PatchVolumeInfo(ctx context.Context, volumeID string, patchBytes []byte,
 	allowedRetries int) error {
 	log := logger.GetLogger(ctx)
+
+	actual, _ := volumeInfo.volumeLock.LoadOrStore(volumeID, &sync.Mutex{})
+	instanceLock, ok := actual.(*sync.Mutex)
+	if !ok {
+		return logger.LogNewErrorf(log, "failed to cast lock for cnsfilevolumeclient instance: %s", volumeID)
+	}
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
 
 	volumeInfoInstance, err := volumeInfo.GetVolumeInfoForVolumeID(ctx, volumeID)
 	if err != nil {
