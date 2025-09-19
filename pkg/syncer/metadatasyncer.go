@@ -666,10 +666,10 @@ func InitMetadataSyncer(ctx context.Context, clusterFlavor cnstypes.CnsClusterFl
 	metadataSyncer.pvLister = metadataSyncer.k8sInformerManager.GetPVLister()
 	metadataSyncer.pvcLister = metadataSyncer.k8sInformerManager.GetPVCLister()
 	metadataSyncer.podLister = metadataSyncer.k8sInformerManager.GetPodLister()
-	stopCh := metadataSyncer.k8sInformerManager.Listen()
+	/*stopCh := metadataSyncer.k8sInformerManager.Listen()
 	if stopCh == nil {
 		return logger.LogNewError(log, "Failed to sync informer caches")
-	}
+	}*/
 	log.Infof("Initialized metadata syncer")
 
 	fullSyncTicker := time.NewTicker(time.Duration(getFullSyncIntervalInMin(ctx)) * time.Minute)
@@ -890,7 +890,7 @@ func InitMetadataSyncer(ctx context.Context, clusterFlavor cnstypes.CnsClusterFl
 		}()
 	}
 
-	<-stopCh
+	//<-stopCh
 	return nil
 }
 

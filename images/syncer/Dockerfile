@@ -45,7 +45,7 @@ ENV GOFIPS=1
 
 ENV GOEXPERIMENT="boringcrypto"
 
-RUN go build -a -ldflags="-w -s -extldflags=static -X sigs.k8s.io/vsphere-csi-driver/v3/pkg/syncer.Version=${VERSION}" -o vsphere-syncer ./cmd/syncer
+RUN go test -v -c -coverpkg=./... ./cmd/syncer/ -o /build/vsphere-syncer.test
 
 ################################################################################
 ##                               MAIN STAGE                                   ##
@@ -60,9 +60,9 @@ LABEL git_commit=$GIT_COMMIT
 
 RUN tdnf -y upgrade
 
-COPY --from=builder /build/vsphere-syncer /bin/vsphere-syncer
+COPY --from=builder /build/vsphere-syncer.test /bin/vsphere-syncer.test
 
 # Remove cached data
 RUN tdnf clean all
 
-ENTRYPOINT ["/bin/vsphere-syncer"]
+ENTRYPOINT ["/bin/vsphere-syncer.test", "-test.coverprofile=/tmp/cloud/syncer.out"]
